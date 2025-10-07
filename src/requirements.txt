@@ -28,4 +28,4 @@ azure-monitor-opentelemetry-exporter==1.0.0b39
 opentelemetry-instrumentation-fastapi==0.52b1
 opentelemetry-instrumentation-logging==0.52b1
 
--r ./scenarios/${SCENARIO}/requirements.txt
+-r ./scenarios/default/requirements.txt
