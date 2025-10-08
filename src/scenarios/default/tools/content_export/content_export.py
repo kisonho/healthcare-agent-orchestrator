@@ -11,8 +11,9 @@ from io import BytesIO
 from azure.core.exceptions import ResourceNotFoundError
 from docx.shared import Inches
 from docxtpl import DocxTemplate, InlineImage, RichText
-from semantic_kernel.connectors.ai.open_ai.prompt_execution_settings.azure_chat_prompt_execution_settings import \
-    AzureChatPromptExecutionSettings
+from semantic_kernel.connectors.ai.open_ai.prompt_execution_settings.azure_chat_prompt_execution_settings import (
+    AzureChatPromptExecutionSettings,
+)
 from semantic_kernel.contents.chat_history import ChatHistory
 from semantic_kernel.functions import kernel_function
 from semantic_kernel.kernel import Kernel
@@ -25,6 +26,7 @@ from data_models.plugin_configuration import PluginConfiguration
 from data_models.tumor_board_summary import ClinicalSummary, ClinicalTrial
 from routes.patient_data.patient_data_routes import get_chat_artifacts_url
 from utils.model_utils import model_supports_temperature
+from services import Provider, create_local_prompt_settings, get_llm_provider
 
 from .timeline_image import create_timeline_images_by_height
 
@@ -48,6 +50,7 @@ class ContentExportPlugin:
         self.chat_ctx = chat_ctx
         self.data_access = data_access
         self.kernel = kernel
+        self.provider = get_llm_provider()
 
     @kernel_function()
     async def export_to_word_doc(
@@ -211,7 +214,14 @@ class ContentExportPlugin:
         else:
             temperature = None
             logger.info("Model does not support temperature setting")
-        settings = AzureChatPromptExecutionSettings(temperature=temperature, response_format=ClinicalSummary)
+        settings_kwargs: dict[str, object] = {"response_format": ClinicalSummary}
+        if temperature is not None:
+            settings_kwargs["temperature"] = temperature
+
+        if self.provider is Provider.AZURE:
+            settings = AzureChatPromptExecutionSettings(**settings_kwargs)
+        else:
+            settings = create_local_prompt_settings(**settings_kwargs)
         chat_completion_service = self.kernel.get_service(service_id="default")
         chat_resp = await chat_completion_service.get_chat_message_content(chat_history=chat_history, settings=settings)
 

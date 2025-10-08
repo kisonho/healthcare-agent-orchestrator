@@ -8,8 +8,6 @@ import re
 from typing import Any, Dict, List
 
 import pandas as pd
-from semantic_kernel.connectors.ai.open_ai.prompt_execution_settings.azure_chat_prompt_execution_settings import \
-    AzureChatPromptExecutionSettings
 from semantic_kernel.contents.chat_history import ChatHistory
 
 from .base import AgentReferenceBasedLLMasJudge
@@ -126,10 +124,10 @@ class TBFactMetric(AgentReferenceBasedLLMasJudge):
         agent_name: str,
         reference_dir_path: str,
         context_window: int = 5,
-        fact_categories: List[str] = None,
+        fact_categories: List[str] = [],
         fact_extraction_prompt_template: str = FACT_EXTRACTION_PROMPT_TEMPLATE,
         entailment_evaluation_prompt_template: str = ENTAILMENT_EVALUATION_PROMPT_TEMPLATE,
-        reference_facts: Dict[str, List[Dict[str, str]]] = None
+        reference_facts: Dict[str, List[Dict[str, str]]] = {}
     ):
         """
         Initialize the factuality evaluator.
@@ -367,7 +365,7 @@ class TBFactMetric(AgentReferenceBasedLLMasJudge):
 
         response = await self.evaluation_llm_service.get_chat_message_content(
             chat_history=extraction_chat,
-            settings=AzureChatPromptExecutionSettings()
+            settings=self._create_prompt_settings()
         )
 
         content = response.content
@@ -410,7 +408,7 @@ class TBFactMetric(AgentReferenceBasedLLMasJudge):
 
         response = await self.evaluation_llm_service.get_chat_message_content(
             chat_history=entailment_chat,
-            settings=AzureChatPromptExecutionSettings()
+            settings=self._create_prompt_settings()
         )
 
         content = response.content

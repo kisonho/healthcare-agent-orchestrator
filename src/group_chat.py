@@ -1,31 +1,29 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT license.
 
-import importlib
-import logging
-import os
-from typing import Any, Awaitable, Callable, Tuple, override
+import importlib, logging, os
+from typing import Any, Awaitable, Callable, NotRequired, TypedDict, override
 
 from pydantic import BaseModel
 from semantic_kernel import Kernel
 from semantic_kernel.agents import AgentGroupChat, ChatCompletionAgent
 from semantic_kernel.agents.channels.chat_history_channel import ChatHistoryChannel
-from semantic_kernel.agents.strategies.selection.kernel_function_selection_strategy import \
-    KernelFunctionSelectionStrategy
-from semantic_kernel.agents.strategies.termination.kernel_function_termination_strategy import \
-    KernelFunctionTerminationStrategy
+from semantic_kernel.agents.strategies.selection.kernel_function_selection_strategy import KernelFunctionSelectionStrategy
+from semantic_kernel.agents.strategies.termination.kernel_function_termination_strategy import KernelFunctionTerminationStrategy
+from semantic_kernel.connectors.ai import PromptExecutionSettings
 from semantic_kernel.connectors.ai.function_choice_behavior import FunctionChoiceBehavior
-from semantic_kernel.connectors.ai.open_ai.prompt_execution_settings.azure_chat_prompt_execution_settings import \
-    AzureChatPromptExecutionSettings
+from semantic_kernel.connectors.ai.open_ai.prompt_execution_settings.azure_chat_prompt_execution_settings import AzureChatPromptExecutionSettings
 from semantic_kernel.connectors.ai.open_ai.services.azure_chat_completion import AzureChatCompletion
 from semantic_kernel.connectors.openapi_plugin import OpenAPIFunctionExecutionParameters
 from semantic_kernel.contents.chat_history import ChatHistory
 from semantic_kernel.contents.chat_message_content import ChatMessageContent
 from semantic_kernel.contents.history_reducer.chat_history_truncation_reducer import ChatHistoryTruncationReducer
 from semantic_kernel.functions.kernel_function_from_prompt import KernelFunctionFromPrompt
-from semantic_kernel.kernel import Kernel, KernelArguments
+from semantic_kernel.kernel import Kernel
+from semantic_kernel.functions import KernelArguments
 from semantic_kernel.prompt_template.input_variable import InputVariable
 from semantic_kernel.prompt_template.prompt_template_config import PromptTemplateConfig
+from semantic_kernel.services.ai_service_client_base import AIServiceClientBase
 
 from data_models.app_context import AppContext
 from data_models.chat_context import ChatContext
@@ -33,6 +31,7 @@ from data_models.plugin_configuration import PluginConfiguration
 from healthcare_agents import HealthcareAgent
 from healthcare_agents import config as healthcare_agent_config
 from utils.model_utils import model_supports_temperature
+from services import Provider, create_local_chat_completion_service, create_local_prompt_settings, get_llm_provider
 
 DEFAULT_MODEL_TEMP = 0
 DEFAULT_TOOL_TYPE = "function"
@@ -43,6 +42,71 @@ logger = logging.getLogger(__name__)
 class ChatRule(BaseModel):
     verdict: str
     reasoning: str
+
+
+class PromptSettingsArgs(TypedDict):
+    function_choice_behavior: FunctionChoiceBehavior
+    seed: int
+    temperature: NotRequired[float | None]
+    response_format: NotRequired[type[BaseModel]]
+
+provider = get_llm_provider()
+
+
+def _create_chat_completion_service(service_id: str, app_ctx: AppContext) -> AIServiceClientBase:
+    match provider:
+        case Provider.AZURE:
+            deployment_name = os.environ["AZURE_OPENAI_DEPLOYMENT_NAME"]
+            endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
+            api_version = os.getenv("AZURE_OPENAI_API_VERSION", "2025-04-01-preview")
+            api_key = os.getenv("AZURE_OPENAI_API_KEY")
+            token_provider = app_ctx.cognitive_services_token_provider if api_key is None else None
+            return AzureChatCompletion(service_id=service_id, deployment_name=deployment_name, endpoint=endpoint, api_version=api_version, api_key=api_key, ad_token_provider=token_provider)
+        case Provider.LOCAL:
+            factory_spec = os.getenv("LOCAL_LLM_SERVICE_FACTORY")
+            if factory_spec:
+                module_path, _, factory_name = factory_spec.partition(":")
+                if not module_path or not factory_name:
+                    raise ValueError("LOCAL_LLM_SERVICE_FACTORY must be in the format 'package.module:function_name'.")
+
+                factory_module = importlib.import_module(module_path)
+                factory: Callable[..., AIServiceClientBase] | None = getattr(factory_module, factory_name, None)
+                if factory is None:
+                    raise AttributeError(f"Factory function '{factory_name}' not found in module '{module_path}'.")
+                return factory(service_id=service_id, app_context=app_ctx)
+            return create_local_chat_completion_service(service_id=service_id)
+        case _:
+            raise NotImplementedError(f"Unsupported LLM_PROVIDER '{provider}'.")
+
+
+def _create_prompt_execution_settings(*, temperature: float | None = None, response_format: type[BaseModel] | None = None) -> PromptExecutionSettings:
+    kwargs: PromptSettingsArgs = PromptSettingsArgs(function_choice_behavior = FunctionChoiceBehavior.Auto(), seed=42)
+    if temperature is not None:
+        kwargs["temperature"] = temperature
+    if response_format is not None:
+        kwargs["response_format"] = response_format
+
+    match provider:
+        case Provider.AZURE:
+            return AzureChatPromptExecutionSettings(**kwargs)
+        case Provider.LOCAL:
+            # get local llm prompt settings factory
+            factory_spec = os.getenv("LOCAL_LLM_PROMPT_SETTINGS_FACTORY")
+
+            # check if local LLM specified
+            if factory_spec:
+                module_path, _, factory_name = factory_spec.partition(":")
+                if not module_path or not factory_name:
+                    raise ValueError("LOCAL_LLM_PROMPT_SETTINGS_FACTORY must be in the format 'package.module:function_name'.")
+                factory_module = importlib.import_module(module_path)
+                factory: Callable[..., PromptExecutionSettings] | None = getattr(factory_module, factory_name, None)
+                if factory is None:
+                    raise AttributeError(f"Factory function '{factory_name}' not found in module '{module_path}'.")
+                return factory(**kwargs)
+
+            return create_local_prompt_settings(**kwargs)
+        case _:
+            raise NotImplementedError(f"Unsupported LLM_PROVIDER '{provider}'.")
 
 
 def create_auth_callback(chat_ctx: ChatContext) -> Callable[..., Awaitable[Any]]:
@@ -105,8 +169,8 @@ class CustomChatCompletionAgent(ChatCompletionAgent):
 
 
 def create_group_chat(
-    app_ctx: AppContext, chat_ctx: ChatContext, participants: list[dict] = None
-) -> Tuple[AgentGroupChat, ChatContext]:
+    app_ctx: AppContext, chat_ctx: ChatContext, participants: list[dict] | None = None
+) -> tuple[AgentGroupChat, ChatContext]:
     participant_configs = participants or app_ctx.all_agent_configs
     participant_names = [cfg.get("name") for cfg in participant_configs]
     logger.info(f"Creating group chat with participants: {participant_names}")
@@ -116,16 +180,9 @@ def create_group_chat(
         agent for agent in participant_configs if agent.get("name") != "magentic"
     ]
 
-    def _create_kernel_with_chat_completion() -> Kernel:
+    def _create_kernel_with_chat_completion(service_id: str = "default") -> Kernel:
         kernel = Kernel()
-        kernel.add_service(
-            AzureChatCompletion(
-                service_id="default",
-                deployment_name=os.environ["AZURE_OPENAI_DEPLOYMENT_NAME"],
-                api_version="2025-04-01-preview",
-                ad_token_provider=app_ctx.cognitive_services_token_provider
-            )
-        )
+        kernel.add_service(_create_chat_completion_service(service_id, app_ctx))
         return kernel
 
     def _create_agent(agent_config: dict):
@@ -175,13 +232,12 @@ def create_group_chat(
             temperature = None
             logger.info(
                 f"Model does not support temperature. Setting temperature to None for agent {agent_config['name']}")
-        settings = AzureChatPromptExecutionSettings(
-            function_choice_behavior=FunctionChoiceBehavior.Auto(), seed=42, temperature=temperature)
+        settings = _create_prompt_execution_settings(temperature=temperature)
         arguments = KernelArguments(settings=settings)
         instructions = agent_config.get("instructions")
         if agent_config.get("facilitator") and instructions:
             instructions = instructions.replace(
-                "{{aiAgents}}", "\n\t\t".join([f"- {agent['name']}: {agent["description"]}" for agent in all_agents_config]))
+                "{{aiAgents}}", "\n\t\t".join([f"- {agent['name']}: {agent['description']}" for agent in all_agents_config]))
 
         return (CustomChatCompletionAgent(kernel=agent_kernel,
                                           name=agent_config["name"],
@@ -193,16 +249,16 @@ def create_group_chat(
                                 app_ctx=app_ctx))
 
     if model_supports_temperature():
-        settings = AzureChatPromptExecutionSettings(
-            function_choice_behavior=FunctionChoiceBehavior.Auto(), seed=42, temperature=0, response_format=ChatRule)
+        settings = _create_prompt_execution_settings(temperature=0, response_format=ChatRule)
     else:
-        settings = AzureChatPromptExecutionSettings(
-            function_choice_behavior=FunctionChoiceBehavior.Auto(), seed=42, response_format=ChatRule)
+        settings = _create_prompt_execution_settings(response_format=ChatRule)
 
     facilitator_agent = next((agent for agent in all_agents_config if agent.get("facilitator")), all_agents_config[0])
     facilitator = facilitator_agent["name"]
 
     # Create selection function with proper input variable configuration
+    participant_lines = "\n".join([("\t- " + agent["name"]) for agent in all_agents_config])
+
     selection_prompt_config = PromptTemplateConfig(
         name="selection",
         description="Agent selection prompt",
@@ -211,7 +267,7 @@ def create_group_chat(
         Determine which participant takes the next turn in a conversation based on the most recent participant. Follow these guidelines:
 
         1. **Participants**: Choose only from these participants:
-            {"\n".join([("\t- " + agent["name"]) for agent in all_agents_config])}
+            {participant_lines}
 
         2. **General Rules**:
             - **{facilitator} Always Starts**: {facilitator} always goes first to formulate a plan. If the only message is from the user, {facilitator} goes next.
@@ -295,7 +351,7 @@ def create_group_chat(
         return rule.verdict if rule.verdict in [agent["name"] for agent in all_agents_config] else facilitator
 
     chat = AgentGroupChat(
-        agents=agents,
+        agents=agents,  # type: ignore
         chat_history=chat_ctx.chat_history,
         selection_strategy=KernelFunctionSelectionStrategy(
             function=selection_function,

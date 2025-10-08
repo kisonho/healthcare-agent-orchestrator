@@ -2,7 +2,6 @@ import logging
 import re
 from typing import Any, Dict, List
 
-from semantic_kernel.connectors.ai.open_ai.services.azure_chat_completion import AzureChatCompletion
 from semantic_kernel.contents.chat_history import ChatHistory
 from semantic_kernel.contents.utils.author_role import AuthorRole
 
@@ -19,7 +18,7 @@ class TurnByTurnEvaluatorWithContext(AgentLLMasJudge):
     }
 
     def __init__(self,
-                 evaluation_llm_service: AzureChatCompletion,
+                 evaluation_llm_service,
                  system_prompt: str = None,
                  metric_name: str = "turn_by_turn_agent_selection",
                  description: str = None,

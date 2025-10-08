@@ -7,6 +7,11 @@ from semantic_kernel.contents.chat_history import ChatHistory
 
 
 class ChatContext:
+    conversation_id: str
+    chat_history: ChatHistory
+    patient_id: str | None
+    patient_data: list[dict[str, str]]
+
     def __init__(self, conversation_id: str):
         self.conversation_id = conversation_id
         self.chat_history = ChatHistory()

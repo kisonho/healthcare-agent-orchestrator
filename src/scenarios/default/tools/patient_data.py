@@ -10,9 +10,10 @@ from uuid import uuid4
 
 from azure.core.exceptions import ResourceNotFoundError
 from semantic_kernel import Kernel
-from semantic_kernel.connectors.ai.open_ai.prompt_execution_settings.azure_chat_prompt_execution_settings import \
-    AzureChatPromptExecutionSettings
-from semantic_kernel.connectors.ai.open_ai.services.azure_chat_completion import AzureChatCompletion
+from semantic_kernel.connectors.ai import PromptExecutionSettings
+from semantic_kernel.connectors.ai.open_ai.prompt_execution_settings.azure_chat_prompt_execution_settings import (
+    AzureChatPromptExecutionSettings,
+)
 from semantic_kernel.contents.chat_history import ChatHistory
 from semantic_kernel.functions import kernel_function
 
@@ -23,6 +24,7 @@ from data_models.patient_data import PatientDataAnswer, PatientTimeline
 from data_models.plugin_configuration import PluginConfiguration
 from routes.views.patient_data_answer_routes import get_patient_data_answer_source_url
 from routes.views.patient_timeline_routes import get_patient_timeline_entry_source_url
+from services import Provider, create_local_prompt_settings, get_llm_provider
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +74,7 @@ class PatientDataPlugin:
             # try to retrieve valid patients:
             patients = await self.data_access.clinical_note_accessor.get_patients()
             logger.exception(f"Error loading patient data for {patient_id}")
-            return f"Invalid patient ID: {patient_id}. Choose from following patient IDs: {", ".join(patients)}"
+            return f"Invalid patient ID: {patient_id}. Choose from following patient IDs: {', '.join(patients)}"
 
     @kernel_function()
     async def create_timeline(self, patient_id: str) -> str:
@@ -88,7 +90,7 @@ class PatientDataPlugin:
         conversation_id = self.chat_ctx.conversation_id
         files = await self.data_access.clinical_note_accessor.read_all(patient_id)
 
-        chat_completion_service: AzureChatCompletion = self.kernel.get_service(service_id="default")
+        chat_completion_service = self.kernel.get_service(service_id="default")
         chat_history = ChatHistory()
 
         # Add instructions
@@ -138,7 +140,7 @@ class PatientDataPlugin:
             response += f"- {entry.date}: {entry.title}\n"
             response += f"{indent}- {entry.description}\n"
             for src_idx, src in enumerate(entry.sources):
-                note_url = get_patient_timeline_entry_source_url(conversation_id, patient_id, entry_index, src_idx)
+                note_url = get_patient_timeline_entry_source_url(conversation_id, patient_id, str(entry_index), src_idx)
                 source_text = " ".join(src.sentences) if src.sentences else "No text provided"
                 shortened_source_text = textwrap.shorten(source_text, width=160, placeholder="\u2026")
                 response += f"{indent}- Source: [{shortened_source_text}]({note_url})\n"
@@ -174,7 +176,7 @@ class PatientDataPlugin:
         chat_history.add_system_message("You have access to the following patient history:\n" + json.dumps(files))
         chat_history.add_system_message(prompt)
 
-        chat_completion_service: AzureChatCompletion = self.kernel.get_service(service_id="default")
+        chat_completion_service = self.kernel.get_service(service_id="default")
         settings = self._get_chat_prompt_exec_settings(PatientDataAnswer)
         chat_resp = await chat_completion_service.get_chat_message_content(chat_history=chat_history, settings=settings)
 
@@ -202,7 +204,7 @@ class PatientDataPlugin:
         response = f"{answer.text}\n\n**Sources**:\n"
         indent = " " * 4
         for src_idx, src in enumerate(answer.sources):
-            note_url = get_patient_data_answer_source_url(conversation_id, patient_id, answer_id, src_idx)
+            note_url = get_patient_data_answer_source_url(conversation_id, patient_id, answer_id, str(src_idx))
             source_text = " ".join(src.sentences) if src.sentences else "No text provided"
             shortened_source_text = textwrap.shorten(source_text, width=160, placeholder="\u2026")
             response += f"{indent}- Source: [{shortened_source_text}]({note_url})\n"
@@ -211,8 +213,15 @@ class PatientDataPlugin:
         return response
 
     @staticmethod
-    def _get_chat_prompt_exec_settings(response_format) -> AzureChatPromptExecutionSettings:
-        return AzureChatPromptExecutionSettings(
+    def _get_chat_prompt_exec_settings(response_format) -> PromptExecutionSettings:
+        provider = get_llm_provider()
+        if provider is Provider.AZURE:
+            return AzureChatPromptExecutionSettings(
+                response_format=response_format,
+                seed=42
+            )
+
+        return create_local_prompt_settings(
             response_format=response_format,
             seed=42
         )

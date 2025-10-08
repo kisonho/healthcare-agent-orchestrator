@@ -7,13 +7,16 @@ import re
 from abc import ABC, abstractmethod
 from typing import Any, Dict, Optional
 
-from semantic_kernel.connectors.ai.open_ai.prompt_execution_settings.azure_chat_prompt_execution_settings import \
-    AzureChatPromptExecutionSettings
-from semantic_kernel.connectors.ai.open_ai.services.azure_chat_completion import AzureChatCompletion
+from semantic_kernel.connectors.ai import PromptExecutionSettings
+from semantic_kernel.connectors.ai.open_ai.prompt_execution_settings.azure_chat_prompt_execution_settings import (
+    AzureChatPromptExecutionSettings,
+)
 from semantic_kernel.contents.chat_history import ChatHistory
 from semantic_kernel.contents.utils.author_role import AuthorRole
+from semantic_kernel.services.ai_service_client_base import AIServiceClientBase
 
 from evaluation.utils import chat_history_to_readable_text
+from services import Provider, create_local_prompt_settings, get_llm_provider
 
 
 class EvaluationMetric(ABC):
@@ -354,14 +357,20 @@ class LLMasJudge(EvaluationMetric):
     to extract a rating.
     """
 
-    def __init__(self, evaluation_llm_service: AzureChatCompletion):
+    def __init__(self, evaluation_llm_service: AIServiceClientBase):
         """
         Initialize the LLM-based evaluator.
 
         Args:
             evaluation_llm_service: The LLM service to use for evaluation
         """
+        self.provider = get_llm_provider()
         self.evaluation_llm_service = evaluation_llm_service
+
+    def _create_prompt_settings(self, **kwargs: Any) -> PromptExecutionSettings:
+        if self.provider is Provider.AZURE:
+            return AzureChatPromptExecutionSettings(**kwargs)
+        return create_local_prompt_settings(**kwargs)
 
     @property
     @abstractmethod
@@ -430,7 +439,7 @@ class LLMasJudge(EvaluationMetric):
         # Get the evaluation from the LLM
         response = await self.evaluation_llm_service.get_chat_message_content(
             chat_history=self_chat_history,
-            settings=AzureChatPromptExecutionSettings()
+            settings=self._create_prompt_settings()
         )
 
         content = response.content
@@ -491,7 +500,7 @@ class AgentLLMasJudge(AgentEvaluationMetric, LLMasJudge):
     Base class for metrics that use an LLM to evaluate specific agent responses.
     """
 
-    def __init__(self, evaluation_llm_service: AzureChatCompletion, agent_name: str, context_window: int = 5):
+    def __init__(self, evaluation_llm_service: AIServiceClientBase, agent_name: str, context_window: int = 5):
         """
         Initialize the agent LLM-based evaluator.
 
@@ -532,7 +541,7 @@ class AgentReferenceBasedLLMasJudge(AgentLLMasJudge, ReferenceBasedMetric):
     Evaluation metric that uses an LLM to judge agent responses against reference answers.
     """
 
-    def __init__(self, evaluation_llm_service: AzureChatCompletion, agent_name: str,
+    def __init__(self, evaluation_llm_service: AIServiceClientBase, agent_name: str,
                  reference_dir_path: str, context_window: int = 5):
         """
         Initialize the agent reference-based evaluation metric.
@@ -599,7 +608,7 @@ class AgentReferenceBasedLLMasJudge(AgentLLMasJudge, ReferenceBasedMetric):
         # Get the evaluation from the LLM
         response = await self.evaluation_llm_service.get_chat_message_content(
             chat_history=eval_chat_history,
-            settings=AzureChatPromptExecutionSettings()
+            settings=self._create_prompt_settings()
         )
 
         content = response.content

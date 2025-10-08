@@ -77,15 +77,14 @@ class HealthcareAgent(Agent):
     channel_type: ClassVar[type[AgentChannel]] = HealthcareAgentChannel
 
     def __init__(self,
-                 name: str = None,
-                 chat_ctx: ChatContext = None,
-                 app_ctx: AppContext = None,
+                 name: str,
+                 chat_ctx: ChatContext,
+                 app_ctx: AppContext,
                  ):
         super().__init__(name=name)
         self.name = name
         self._chat_ctx = chat_ctx
         self._data_access = app_ctx.data_access
-        self._client: HealthcareAgentServiceClient = None
 
         if not name:
             raise ValueError("Agent name is required.")
@@ -101,7 +100,7 @@ class HealthcareAgent(Agent):
             chat_ctx=chat_ctx,
             url=config.directline_url,
             keyvault_client=SecretClient(
-                vault_url=os.getenv("KEYVAULT_ENDPOINT"),
+                vault_url=os.getenv("KEYVAULT_ENDPOINT") or "",
                 credential=app_ctx.credential,
             ),
             directline_secret_key=config.keyvault_secret_key_name.format(name=name),

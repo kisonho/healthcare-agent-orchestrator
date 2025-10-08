@@ -8,8 +8,10 @@ import os
 
 import aiohttp
 from semantic_kernel import Kernel
-from semantic_kernel.connectors.ai.open_ai.prompt_execution_settings.azure_chat_prompt_execution_settings import \
-    AzureChatPromptExecutionSettings
+from semantic_kernel.connectors.ai import PromptExecutionSettings
+from semantic_kernel.connectors.ai.open_ai.prompt_execution_settings.azure_chat_prompt_execution_settings import (
+    AzureChatPromptExecutionSettings,
+)
 from semantic_kernel.connectors.ai.open_ai.services.azure_chat_completion import AzureChatCompletion
 from semantic_kernel.contents.chat_history import ChatHistory
 from semantic_kernel.functions import kernel_function
@@ -17,6 +19,7 @@ from semantic_kernel.functions import kernel_function
 from data_models.app_context import AppContext
 from data_models.chat_context import ChatContext
 from data_models.plugin_configuration import PluginConfiguration
+from services import Provider, create_local_chat_completion_service, create_local_prompt_settings, get_llm_provider
 
 logger = logging.getLogger(__name__)
 PROMPT = """Analyze the structured patient data and compare it against the clinical trial eligibility criteria. First, respond with “Yes” if the patient meets all eligibility criteria or “No” if they do not.
@@ -58,14 +61,6 @@ Given the patient's attributes, generate a search query following the example ab
 """
 
 
-def create_plugin(plugin_config: PluginConfiguration) -> Kernel:
-    return ClinicalTrialsPlugin(
-        plugin_config.kernel,
-        chat_ctx=plugin_config.chat_ctx,
-        app_ctx=plugin_config.app_ctx
-    )
-
-
 class ClinicalTrialsPlugin:
     def __init__(self, kernel: Kernel, chat_ctx: ChatContext, app_ctx: AppContext):
         self.root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -76,13 +71,33 @@ class ClinicalTrialsPlugin:
         self.app_ctx = app_ctx
 
         # Clinical trial matching works better with a reasoning model
-        self.chat_completion_service = AzureChatCompletion(
-            service_id="reasoning-model",
-            deployment_name=os.environ["AZURE_OPENAI_DEPLOYMENT_NAME_REASONING_MODEL"],
-            api_version="2025-04-01-preview",
-            endpoint=os.environ["AZURE_OPENAI_REASONING_MODEL_ENDPOINT"],
-            ad_token_provider=self.app_ctx.cognitive_services_token_provider if not hasattr(os.environ,"AZURE_OPENAI_API_KEY") else None,
-        )
+        self.provider = get_llm_provider()
+        match self.provider:
+            case Provider.AZURE:
+                deployment_name = os.environ["AZURE_OPENAI_DEPLOYMENT_NAME_REASONING_MODEL"]
+                endpoint = os.environ["AZURE_OPENAI_REASONING_MODEL_ENDPOINT"]
+                api_version = os.getenv("AZURE_OPENAI_API_VERSION", "2025-04-01-preview")
+                api_key = os.getenv("AZURE_OPENAI_API_KEY")
+                token_provider = self.app_ctx.cognitive_services_token_provider if api_key is None else None
+                self.chat_completion_service = AzureChatCompletion(
+                    service_id="reasoning-model",
+                    deployment_name=deployment_name,
+                    api_version=api_version,
+                    endpoint=endpoint,
+                    api_key=api_key,
+                    ad_token_provider=token_provider,
+                )
+            case Provider.LOCAL:
+                reasoning_model_id = os.getenv("LOCAL_LLM_REASONING_MODEL_ID")
+                self.chat_completion_service = create_local_chat_completion_service(
+                    service_id="reasoning-model",
+                    ai_model_id=reasoning_model_id,
+                )
+
+    def _create_prompt_settings(self) -> PromptExecutionSettings:
+        if self.provider is Provider.AZURE:
+            return AzureChatPromptExecutionSettings()
+        return create_local_prompt_settings()
 
     @kernel_function()
     async def generate_clinical_trial_search_criteria(self, biomarkers: list[str], histology: str, staging: str):
@@ -103,8 +118,7 @@ class ClinicalTrialsPlugin:
                                           'staging': staging,
                                       }, indent=4))
 
-        chat_completion_response = await self.chat_completion_service.get_chat_message_content(
-            chat_history=chat_history, settings=AzureChatPromptExecutionSettings())
+        chat_completion_response = await self.chat_completion_service.get_chat_message_content(chat_history=chat_history, settings=self._create_prompt_settings())
         logger.info(f"Generated search query: {chat_completion_response}")
         return str(chat_completion_response)
 
@@ -147,7 +161,7 @@ class ClinicalTrialsPlugin:
                 resp.raise_for_status()
                 result = await resp.json()
 
-        logger.info(f"Clinical trials found: {len(result["studies"])}")
+        logger.info("Clinical trials found: %s", len(result["studies"]))
 
         chat_completion_responses = []
         for trial in result["studies"]:
@@ -160,7 +174,7 @@ class ClinicalTrialsPlugin:
 
             chat_completion_response = self.chat_completion_service.get_chat_message_content(
                 # We can't pass temperature here, because o3-mini doesn't support it. There are other settings we could customize here.
-                chat_history=chat_history, settings=AzureChatPromptExecutionSettings())
+                chat_history=chat_history, settings=self._create_prompt_settings())
             chat_completion_responses.append(chat_completion_response)
 
         response_results = await asyncio.gather(*chat_completion_responses)
@@ -199,7 +213,15 @@ class ClinicalTrialsPlugin:
 
         chat_completion_response = await self.chat_completion_service.get_chat_message_content(
             # We can't pass temperature here, because o3-mini doesn't support it. There are other settings we could customize here.
-            chat_history=chat_history, settings=AzureChatPromptExecutionSettings())
+            chat_history=chat_history, settings=self._create_prompt_settings())
         self.chat_ctx.display_clinical_trials.append(
             self.clinical_trial_display + trial)
         return str(chat_completion_response)
+
+
+def create_plugin(plugin_config: PluginConfiguration) -> ClinicalTrialsPlugin:
+    return ClinicalTrialsPlugin(
+        plugin_config.kernel,
+        chat_ctx=plugin_config.chat_ctx,
+        app_ctx=plugin_config.app_ctx
+    )

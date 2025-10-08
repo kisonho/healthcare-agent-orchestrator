@@ -7,10 +7,11 @@ import hashlib
 import logging
 import os
 from datetime import datetime
-from typing import Protocol
+from typing import Protocol, Self
 
-from semantic_kernel.connectors.ai.open_ai.prompt_execution_settings.azure_chat_prompt_execution_settings import \
-    AzureChatPromptExecutionSettings
+from semantic_kernel.agents import AgentGroupChat
+from semantic_kernel.connectors.ai import PromptExecutionSettings
+from semantic_kernel.connectors.ai.open_ai.prompt_execution_settings.azure_chat_prompt_execution_settings import AzureChatPromptExecutionSettings
 from semantic_kernel.connectors.ai.open_ai.services.azure_chat_completion import AzureChatCompletion
 from semantic_kernel.contents.chat_history import ChatHistory
 from semantic_kernel.contents.chat_message_content import ChatMessageContent
@@ -18,21 +19,27 @@ from semantic_kernel.contents.utils.author_role import AuthorRole
 
 from data_models.chat_context import ChatContext
 from data_models.chat_context_accessor import ChatContextAccessor
+from services import Provider, create_local_chat_completion_service, create_local_prompt_settings, get_llm_provider
 from group_chat import create_group_chat
 
 from .utils import chat_history_to_readable_text
 
 
 class SimulatedUserProtocol(Protocol):
+    provider: Provider
+
     @property
     def is_complete(self) -> bool:
         ...
 
-    def setup(self, patient_id: str, initial_query: str, followup_questions: list[str] = None):
+    def _create_prompt_settings(self) -> PromptExecutionSettings:
+        ...
+
+    def setup(self, patient_id: str, initial_query: str, followup_questions: list[str] | None = None):
         """Prepare the user to start the conversation."""
         ...
 
-    async def generate_user_message(self, chat_history: ChatHistory) -> str:
+    async def generate_user_message(self, chat_history: ChatHistory | None) -> str:
         """Generate a user message based on the chat history."""
         ...
 
@@ -46,11 +53,11 @@ class ProceedUser:
     def is_complete(self) -> bool:
         return False
 
-    def setup(self, patient_id: str, initial_query: str, followup_questions: list[str] = None):
+    def setup(self, patient_id: str, initial_query: str, followup_questions: list[str] | None = None):
         self.followup_questions = followup_questions
         self.followup_asked = False
 
-    async def generate_user_message(self, chat_history: ChatHistory) -> str:
+    async def generate_user_message(self, chat_history: ChatHistory | None) -> str:
         if not self.followup_asked and self.followup_questions:
             self.followup_asked = True
             if self.followup_questions:
@@ -70,14 +77,25 @@ class LLMUser:
         self.simulation_prompt = None
         self.is_complete = False
         self.chat_history = ChatHistory()
-        self.chat_completion_service = AzureChatCompletion(
-            deployment_name=os.environ["AZURE_OPENAI_DEPLOYMENT_NAME"],
-            api_version="2025-04-01-preview",
-            endpoint=os.environ["AZURE_OPENAI_ENDPOINT"],
-            ad_token_provider=app_ctx.cognitive_services_token_provider if not hasattr(os.environ,"AZURE_OPENAI_API_KEY") else None,
-        )
+        self.provider = get_llm_provider()
 
-    def setup(self, patient_id: str, initial_query: str, followup_questions: list[str] = None):
+        if self.provider is Provider.AZURE:
+            api_key = os.getenv("AZURE_OPENAI_API_KEY")
+            self.chat_completion_service = AzureChatCompletion(
+                deployment_name=os.environ["AZURE_OPENAI_DEPLOYMENT_NAME"],
+                api_version=os.getenv("AZURE_OPENAI_API_VERSION", "2025-04-01-preview"),
+                endpoint=os.environ["AZURE_OPENAI_ENDPOINT"],
+                api_key=api_key,
+                ad_token_provider=app_ctx.cognitive_services_token_provider if api_key is None else None,
+            )
+        else:
+            evaluation_model_id = os.getenv("LOCAL_LLM_EVALUATION_MODEL_ID")
+            self.chat_completion_service = create_local_chat_completion_service(
+                service_id="evaluation-user",
+                ai_model_id=evaluation_model_id,
+            )
+
+    def setup(self, patient_id: str, initial_query: str, followup_questions: list[str] | None = None):
         """Prepare the user to start the conversation."""
         followup_question_prompt = ""
         if followup_questions:
@@ -126,14 +144,21 @@ Remember to ask only one follow-up question at a time, waiting for the agent's r
         self.chat_history.add_user_message(self._transform_chat_history(new_messages))
 
         response = await self.chat_completion_service.get_chat_message_content(
-            chat_history=self.chat_history, settings=AzureChatPromptExecutionSettings()
+            chat_history=self.chat_history, settings=self._create_prompt_settings()
         )
 
-        if response.content == self.chat_complete_message:
+        if response is None:
+            raise RuntimeError("No response fetched from service.")
+        elif response.content == self.chat_complete_message:
             self.is_complete = True
             return ""
 
         return response.content
+
+    def _create_prompt_settings(self) -> PromptExecutionSettings:
+        if self.provider is Provider.AZURE:
+            return AzureChatPromptExecutionSettings()
+        return create_local_prompt_settings()
 
     def _extract_new_messages(self, chat_history: ChatHistory) -> list[ChatMessageContent]:
         """
@@ -197,18 +222,18 @@ class ChatSimulator:
         self,
         simulated_user: SimulatedUserProtocol,
         group_chat_kwargs: dict,
-        patients_id: list[str] = None,
-        initial_queries: list[str] = None,
+        patients_id: list[str] | None = None,
+        initial_queries: list[str] | None = None,
         trial_count: int = 2,
         max_turns: int = 5,
-        followup_questions: list[list[str]] = None,
+        followup_questions: list[list[str]] | None = None,
         output_folder_path: str = "chat_simulations",
         save_readable_history: bool = True,
         print_messages: bool = False,
         raise_errors: bool = False,
     ):
-        self.group_chat = None
-        self.chat_context = None
+        self.group_chat = AgentGroupChat()
+        self.chat_context = ChatContext("")
 
         # Chat simulation data
         self.patients_id = patients_id or []
@@ -233,7 +258,7 @@ class ChatSimulator:
         if not os.path.exists(self.output_folder_path):
             os.makedirs(self.output_folder_path, exist_ok=True)
 
-    def setup_group_chat(self, chat_id: str, **kwargs) -> None:
+    def setup_group_chat(self, chat_id: str, **kwargs) -> Self:
         """
         Set up the group chat with the specified chat ID.
 
@@ -274,7 +299,7 @@ class ChatSimulator:
             # Try UTF-8 first
             with open(csv_file_path, mode="r", encoding="utf-8") as csv_file:
                 reader = csv.DictReader(csv_file, delimiter=delimiter)
-                if any('\ufeff' in field for field in reader.fieldnames):
+                if reader.fieldnames is None or any('\ufeff' in field for field in reader.fieldnames):
                     # If UTF-8 failed to properly read headers, try UTF-8-SIG
                     raise UnicodeError("BOM detected, retrying with utf-8-sig")
 
@@ -379,6 +404,7 @@ class ChatSimulator:
         """
         user_message = ChatMessageContent(role=AuthorRole.USER, content=message)
         self._print_message(user_message)
+
         await self.group_chat.add_chat_message(user_message)
         self.group_chat.is_complete = False
 
@@ -392,7 +418,7 @@ class ChatSimulator:
 
         return self
 
-    def save(self, output_filename: str = None, save_readable_history: bool = False) -> None:
+    def save(self, output_filename: str, save_readable_history: bool = False) -> Self:
         """
         Save the chat history to a file.
 
@@ -454,7 +480,7 @@ class ChatSimulator:
         Raises:
             ValueError: If the specified columns are not found in the CSV file.
         """
-        if initial_queries_column not in reader.fieldnames:
+        if not reader.fieldnames or initial_queries_column not in reader.fieldnames:
             raise ValueError(f"Column '{initial_queries_column}' not found in the CSV file.")
 
         if patients_id_column not in reader.fieldnames:
@@ -513,5 +539,6 @@ class ChatSimulator:
 
     def _generate_chat_unique_id(self, patient_id: str, initial_query: str, followup_questions: list[str]) -> str:
         """Generate a unique ID for the chat based on patient ID, initial query, and follow-up questions."""
-        return hashlib.sha256(
-            f"{patient_id}{initial_query}{"".join(followup_questions)}{type(self.simulated_user).__name__}".encode()).hexdigest()
+        followups_str = "".join(followup_questions) if followup_questions else ""
+        unique_seed = f"{patient_id}{initial_query}{followups_str}{type(self.simulated_user).__name__}"
+        return hashlib.sha256(unique_seed.encode()).hexdigest()
