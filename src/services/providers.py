@@ -9,5 +9,5 @@ class Provider(Enum):
 
 def get_llm_provider() -> Provider:
     """Return the configured LLM provider based on environment settings."""
-    default = Provider.AZURE.value
+    default = Provider.LOCAL.value
     return Provider(os.getenv("LLM_PROVIDER", default).lower())
