@@ -5,15 +5,14 @@ import json
 import logging
 from io import BytesIO
 from time import time
-
-from azure.storage.blob.aio import BlobServiceClient
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
 
 class ImageAccessor:
     def __init__(
-        self, blob_service_client: BlobServiceClient,
+        self, blob_service_client: Any,
         container_name: str = "patient-data",
         folder_name: str = "images"
     ):

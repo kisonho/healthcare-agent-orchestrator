@@ -1,0 +1,14 @@
+bot_ids:
+  Orchestrator: orchestrator-bot-id
+  PatientHistory: patient-history-bot-id
+  PatientStatus: patient-status-bot-id
+  Radiology: radiology-bot-id
+  Pathology: pathology-bot-id
+  ClinicalTrials: clinical-trials-bot-id
+  ReportCreation: report-creation-bot-id
+  MedicalResearch: medical-research-bot-id
+  magentic: magentic-bot-id
+hls_model_endpoints:
+  default:
+    deployment_name: local-model
+    endpoint: http://localhost:8001

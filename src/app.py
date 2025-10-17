@@ -3,6 +3,8 @@
 
 import logging
 import os
+from pathlib import Path
+from typing import Any
 
 from azure.identity import AzureCliCredential, ManagedIdentityCredential
 from azure.storage.blob.aio import BlobServiceClient
@@ -28,6 +30,7 @@ from routes.api.user import user_routes
 from routes.patient_data.patient_data_routes import patient_data_routes
 from routes.views.patient_data_answer_routes import patient_data_answer_source_routes
 from routes.views.patient_timeline_routes import patient_timeline_entry_source_routes
+from utils.storage.local_blob import LocalBlobServiceClient
 
 load_dotenv(".env")
 
@@ -43,17 +46,29 @@ def create_app_context():
     scenario = os.getenv("SCENARIO")
     agent_config = load_agent_config(scenario)
 
-    # Load Azure Credential
-    credential = ManagedIdentityCredential(client_id=os.getenv("AZURE_CLIENT_ID")) \
-        if os.getenv("WEBSITE_SITE_NAME") is not None \
-        else AzureCliCredential()   # used for local development
+    infrastructure_provider = os.getenv("INFRA_PROVIDER", "azure").lower()
 
-    # Setup data access
-    blob_service_client = BlobServiceClient(
-        account_url=os.getenv("APP_BLOB_STORAGE_ENDPOINT"),
-        credential=credential,
+    credential: Any
+    blob_service_client: Any
+
+    if infrastructure_provider == "local":
+        storage_root = Path(os.getenv("LOCAL_STORAGE_PATH", "./local_data"))
+        credential = None
+        blob_service_client = LocalBlobServiceClient(storage_root)
+    else:
+        credential = ManagedIdentityCredential(client_id=os.getenv("AZURE_CLIENT_ID")) \
+            if os.getenv("WEBSITE_SITE_NAME") is not None \
+            else AzureCliCredential()   # used for local development
+        blob_service_client = BlobServiceClient(
+            account_url=os.getenv("APP_BLOB_STORAGE_ENDPOINT"),
+            credential=credential,
+        )
+
+    data_access = create_data_access(
+        blob_service_client,
+        credential,
+        provider=infrastructure_provider,
     )
-    data_access = create_data_access(blob_service_client, credential)
 
     return AppContext(
         all_agent_configs=agent_config,

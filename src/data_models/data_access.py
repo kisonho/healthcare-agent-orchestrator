@@ -5,6 +5,7 @@ import datetime
 import logging
 import os
 from dataclasses import dataclass
+from typing import Any, Optional
 
 from azure.core.credentials_async import AsyncTokenCredential
 from azure.storage.blob import BlobSasPermissions, UserDelegationKey, generate_blob_sas
@@ -79,10 +80,17 @@ class BlobSasDelegate(UserDelegationKeyDelegate):
         return f"{url}?{sas_token}"
 
 
+class LocalBlobSasDelegate:
+    """No-op SAS delegate for local filesystem-backed blobs."""
+
+    async def get_blob_sas_url(self, url: str, *_, **__) -> str:
+        return url
+
+
 @dataclass(frozen=True)
 class DataAccess:
     """ Data access layer for the application. """
-    blob_sas_delegate: BlobSasDelegate
+    blob_sas_delegate: Any
     chat_artifact_accessor: ChatArtifactAccessor
     chat_context_accessor: ChatContextAccessor
     clinical_note_accessor: ClinicalNoteAccessor
@@ -90,19 +98,21 @@ class DataAccess:
 
 
 def create_data_access(
-    blob_service_client: BlobServiceClient,
-    credential: AsyncTokenCredential
+    blob_service_client: Any,
+    credential: Optional[AsyncTokenCredential],
+    *,
+    provider: str = "azure"
 ) -> DataAccess:
     """ Factory function to create a DataAccess object. """
     # Create clinical note accessor based on the source
     clinical_notes_source = os.getenv("CLINICAL_NOTES_SOURCE")
-    if clinical_notes_source == "fhir":
+    if provider == "azure" and clinical_notes_source == "fhir":
         # Note: You can change FhirClinicalNoteAccessor instantiation to use different authentication methods
         clinical_note_accessor = FhirClinicalNoteAccessor.from_credential(
             fhir_url=os.getenv("FHIR_SERVICE_ENDPOINT"),
             credential=credential,
         )
-    elif clinical_notes_source == "fabric":
+    elif provider == "azure" and clinical_notes_source == "fabric":
         clinical_note_accessor = FabricClinicalNoteAccessor.from_credential(
             fabric_user_data_function_endpoint=os.getenv("FABRIC_USER_DATA_FUNCTION_ENDPOINT"),
             credential=credential,
@@ -110,8 +120,14 @@ def create_data_access(
     else:
         clinical_note_accessor = ClinicalNoteAccessor(blob_service_client)
 
+    delegate: Any
+    if provider == "azure":
+        delegate = BlobSasDelegate(blob_service_client)
+    else:
+        delegate = LocalBlobSasDelegate()
+
     return DataAccess(
-        blob_sas_delegate=BlobSasDelegate(blob_service_client),
+        blob_sas_delegate=delegate,
         chat_artifact_accessor=ChatArtifactAccessor(blob_service_client),
         chat_context_accessor=ChatContextAccessor(blob_service_client),
         clinical_note_accessor=clinical_note_accessor,

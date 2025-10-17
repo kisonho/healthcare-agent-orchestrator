@@ -4,6 +4,8 @@
 import json
 import logging
 import os
+from pathlib import Path
+from typing import Any, Dict
 from azure.monitor.opentelemetry import configure_azure_monitor
 from opentelemetry import trace
 from opentelemetry.sdk.trace import TracerProvider
@@ -71,6 +73,16 @@ def setup_logging(log_level=logging.DEBUG) -> None:
     logger.setLevel(log_level)
 
 
+def _load_local_settings() -> Dict[str, Any]:
+    """Read local configuration overrides when running without Azure."""
+    default_path = Path(__file__).with_name("config.local.yaml")
+    settings_path = Path(os.getenv("LOCAL_SETTINGS_PATH", default_path))
+    if settings_path.exists():
+        with settings_path.open("r", encoding="utf-8") as f:
+            return yaml.safe_load(f) or {}
+    return {}
+
+
 def load_agent_config(scenario: str) -> dict:
     src_dir = os.path.dirname(os.path.abspath(__file__))
     scenario_directory = os.path.join(src_dir, f"scenarios/{scenario}/config")
@@ -79,8 +91,22 @@ def load_agent_config(scenario: str) -> dict:
 
     with open(agent_config_path, "r", encoding="utf-8") as f:
         agent_config = yaml.safe_load(f)
-    bot_ids = json.loads(os.getenv("BOT_IDS"))
-    hls_model_endpoints = json.loads(os.getenv("HLS_MODEL_ENDPOINTS"))
+
+    infra_provider = os.getenv("INFRA_PROVIDER", "azure").lower()
+    local_settings = _load_local_settings() if infra_provider == "local" else {}
+
+    bot_ids_env = os.getenv("BOT_IDS")
+    if bot_ids_env:
+        bot_ids = json.loads(bot_ids_env)
+    else:
+        bot_ids = local_settings.get("bot_ids", {})
+
+    hls_model_env = os.getenv("HLS_MODEL_ENDPOINTS")
+    if hls_model_env:
+        hls_model_endpoints = json.loads(hls_model_env)
+    else:
+        hls_model_endpoints = local_settings.get("hls_model_endpoints", {})
+
     for agent in agent_config:
         agent["bot_id"] = bot_ids.get(agent["name"])
         agent["hls_model_endpoint"] = hls_model_endpoints

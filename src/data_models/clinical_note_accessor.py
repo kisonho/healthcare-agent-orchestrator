@@ -4,15 +4,14 @@
 import asyncio
 import logging
 from time import time
-
-from azure.storage.blob.aio import BlobServiceClient
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
 
 class ClinicalNoteAccessor:
     def __init__(
-        self, blob_service_client: BlobServiceClient,
+        self, blob_service_client: Any,
         container_name: str = "patient-data",
         folder_name: str = "clinical_notes"
     ):

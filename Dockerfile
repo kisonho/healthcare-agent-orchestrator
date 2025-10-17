@@ -1,12 +1,15 @@
 # syntax=docker/dockerfile:1.7
 
-ARG PYTHON_VERSION=3.11
+ARG PYTHON_VERSION=3.12
 ARG NODE_VERSION=20
 
 ###############################################################################
 # Frontend build stage (optional)
 ###############################################################################
 FROM node:${NODE_VERSION}-bookworm AS frontend-builder
+
+ENV PUPPETEER_SKIP_DOWNLOAD=true \
+    npm_config_cache=/tmp/npm-cache
 
 WORKDIR /workspace/democlient
 
@@ -53,15 +56,15 @@ RUN curl -sL https://aka.ms/InstallAzureCLIDeb | bash
 # Copy requirements first for better layer caching.
 COPY src/requirements.txt src/scenarios/default/requirements.txt ./src/
 
-RUN pip install --upgrade pip && \
-    pip install -r src/requirements.txt
-
 # Copy application sources.
 COPY . .
 
 # Copy built frontend assets (if build stage executed successfully).
 COPY --from=frontend-builder /workspace/democlient/build /app/src/static/static
 
+COPY docker/start.sh /app/start.sh
+RUN chmod +x /app/start.sh
+
 EXPOSE 8000
 
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["bash", "/app/start.sh"]

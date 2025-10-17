@@ -5,8 +5,7 @@ import base64
 import logging
 from datetime import datetime, timezone
 from time import time
-
-from azure.storage.blob.aio import BlobServiceClient
+from typing import Any
 
 from data_models.chat_artifact import ChatArtifact, ChatArtifactIdentifier
 
@@ -16,7 +15,7 @@ logger = logging.getLogger(__name__)
 class ChatArtifactAccessor:
     """Accessor for reading and writing chat artifacts to Azure Blob Storage."""
 
-    def __init__(self, blob_service_client: BlobServiceClient, container_name: str = "chat-artifacts"):
+    def __init__(self, blob_service_client: Any, container_name: str = "chat-artifacts"):
         self.blob_service_client = blob_service_client
         self.container_client = self.blob_service_client.get_container_client(container_name)
         self.container_name = container_name

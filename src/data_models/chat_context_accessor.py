@@ -5,9 +5,9 @@ import json
 import logging
 from datetime import datetime, timezone
 from time import time
+from typing import Any
 
 from azure.core.exceptions import ResourceNotFoundError
-from azure.storage.blob.aio import BlobServiceClient
 from semantic_kernel.contents.chat_history import ChatHistory
 
 from data_models.chat_context import ChatContext
@@ -35,7 +35,7 @@ class ChatContextAccessor:
         - Delete `chat_context.json`
     """
 
-    def __init__(self, blob_service_client: BlobServiceClient, container_name: str = "chat-sessions",):
+    def __init__(self, blob_service_client: Any, container_name: str = "chat-sessions",):
         self.blob_service_client = blob_service_client
         self.container_client = blob_service_client.get_container_client(container_name)
 

@@ -17,7 +17,7 @@ from collections.abc import AsyncGenerator
 from typing import Any, ClassVar
 
 import aiohttp
-from pydantic import Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError
 
 from semantic_kernel.connectors.ai.chat_completion_client_base import ChatCompletionClientBase
 from semantic_kernel.connectors.ai.prompt_execution_settings import PromptExecutionSettings
@@ -216,6 +216,24 @@ def _load_bool_env(env_var: str, default: bool) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _normalize_response_format(response_format: Any) -> Any:
+    """Convert response_format values to the JSON schema dict expected by the local connector."""
+    if isinstance(response_format, type) and issubclass(response_format, BaseModel):
+        schema = response_format.model_json_schema()
+        return {
+            "type": "json_schema",
+            "json_schema": {
+                "name": response_format.__name__,
+                "schema": schema,
+            },
+        }
+
+    if isinstance(response_format, BaseModel):
+        return _normalize_response_format(response_format.__class__)
+
+    return response_format
+
+
 def create_local_chat_completion_service(*, service_id: str, ai_model_id: str | None = None) -> LocalChatCompletion:
     """Factory used by group_chat to build the local chat completion client."""
 
@@ -256,7 +274,11 @@ def create_local_chat_completion_service(*, service_id: str, ai_model_id: str | 
 def create_local_prompt_settings(**kwargs: Any) -> LocalLLMPromptExecutionSettings:
     """Factory used by group_chat to build local prompt execution settings."""
 
+    normalized_kwargs = dict(kwargs)
+    if "response_format" in normalized_kwargs and normalized_kwargs["response_format"] is not None:
+        normalized_kwargs["response_format"] = _normalize_response_format(normalized_kwargs["response_format"])
+
     try:
-        return LocalLLMPromptExecutionSettings(**kwargs)
+        return LocalLLMPromptExecutionSettings(**normalized_kwargs)
     except ValidationError as exc:
         raise ServiceInvalidExecutionSettingsError("Invalid local LLM prompt settings.") from exc
