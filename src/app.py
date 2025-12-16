@@ -38,8 +38,16 @@ load_dotenv(".env")
 log_level = logging.INFO
 setup_logging(log_level=log_level)
 
+# Load Azure Credential
+credential = ManagedIdentityCredential(client_id=os.getenv("AZURE_CLIENT_ID")) \
+    if os.getenv("WEBSITE_SITE_NAME") is not None \
+    else AzureCliCredential()   # used for local development
 
-def create_app_context():
+# Setup Application Insights logging
+setup_app_insights_logging(credential=credential, log_level=log_level)
+
+
+def create_app_context() -> AppContext:
     '''Create the application context for commonly used object used in application.'''
 
     # Load agent configuration
@@ -71,7 +79,7 @@ def create_app_context():
     )
 
     return AppContext(
-        all_agent_configs=agent_config,
+        all_agent_configs=[agent_config],
         blob_service_client=blob_service_client,
         credential=credential,
         data_access=data_access,
@@ -121,10 +129,6 @@ def create_app(
 
 
 app_context = create_app_context()
-
-# Setup Application Insights logging
-setup_app_insights_logging(credential=app_context.credential,
-                           log_level=log_level)
 
 # Create Teams specific objects
 adapters = {
