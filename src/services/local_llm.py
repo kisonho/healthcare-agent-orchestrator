@@ -183,7 +183,7 @@ class LocalChatCompletion(ChatCompletionClientBase):
             completions.append(
                 ChatMessageContent(
                     role=AuthorRole(role),
-                    items=[TextContent(text=content)] if content else [],
+                    # items=[TextContent(text=content)] if content else [],
                     content=content or None,
                     ai_model_id=ai_model_id,
                     metadata=metadata,

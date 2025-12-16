@@ -21,3 +21,4 @@ src/public/output_data
 infra/config
 data
 .env.production
+/local_data
